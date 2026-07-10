@@ -2,8 +2,8 @@
 
 import os
 
-from PySide6.QtCore import QThread, Qt, Signal
-from PySide6.QtGui import QColor, QDragEnterEvent, QDropEvent, QPixmap
+from PySide6.QtCore import QThread, QUrl, Qt, Signal
+from PySide6.QtGui import QColor, QDesktopServices, QDragEnterEvent, QDropEvent, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -35,6 +35,8 @@ from core.selection_store import (
     load_selection,
     save_selection,
 )
+from core.update_checker import UpdateCheckError, UpdateInfo, check_for_update
+from core.version import __version__ as APP_VERSION
 from gui.widgets import ColorPickerButton, GroupListWidget, make_labeled_row
 
 RESOLUTION_PRESETS = [512, 1024, 2048, 4096, 8192, 16384]
@@ -79,6 +81,24 @@ class RenderWorker(QThread):
             self.finished_ok.emit(img, self.out_path)
         except Exception as e:  # noqa: BLE001
             self.failed.emit(f"Render failed: {e}")
+
+
+class UpdateCheckWorker(QThread):
+    checked_ok = Signal(object)  # UpdateInfo | None
+    failed = Signal(str)
+
+    def __init__(self, current_version: str):
+        super().__init__()
+        self.current_version = current_version
+
+    def run(self):
+        try:
+            info = check_for_update(self.current_version)
+            self.checked_ok.emit(info)
+        except UpdateCheckError as e:
+            self.failed.emit(str(e))
+        except Exception as e:  # noqa: BLE001 - surface unexpected errors too
+            self.failed.emit(f"Unexpected error: {e}")
 
 
 class DropZone(QFrame):
@@ -160,16 +180,62 @@ class MainWindow(QMainWindow):
         self.current_path: str | None = None
         self.load_worker: LoadWorker | None = None
         self.render_worker: RenderWorker | None = None
+        self.update_check_worker: UpdateCheckWorker | None = None
+        self._update_check_is_silent = True
+        self._pending_update_info: UpdateInfo | None = None
         self._reloading_for_channel_switch = False
 
         self._build_ui()
         self._apply_theme()
 
+        # Silent check on launch: only surfaces anything if an update is
+        # actually found (via the dismissible banner below) -- a flaky
+        # connection or a rate-limited GitHub API shouldn't pop an error
+        # at someone on every startup. "Help > Check for Updates…" runs
+        # the same check non-silently for an explicit result either way.
+        self._check_for_updates(silent=True)
+
     # ---------------------------------------------------------------- UI ---
     def _build_ui(self):
+        help_menu = self.menuBar().addMenu("&Help")
+        check_updates_action = help_menu.addAction("Check for Updates…")
+        check_updates_action.triggered.connect(lambda: self._check_for_updates(silent=False))
+        about_action = help_menu.addAction("About")
+        about_action.triggered.connect(self._show_about_dialog)
+
         central = QWidget()
         self.setCentralWidget(central)
-        root = QHBoxLayout(central)
+        outer = QVBoxLayout(central)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        # Dismissible strip shown only once a newer GitHub release is
+        # actually found -- stays hidden the rest of the time rather than
+        # taking up permanent space for something that's usually not there.
+        self.update_banner = QWidget()
+        self.update_banner.setStyleSheet(
+            "background: #2c3e50; border-bottom: 1px solid #3d5468;"
+        )
+        banner_layout = QHBoxLayout(self.update_banner)
+        banner_layout.setContentsMargins(12, 6, 8, 6)
+        self.update_banner_label = QLabel("")
+        self.update_banner_label.setStyleSheet("color: #dce8f2;")
+        banner_layout.addWidget(self.update_banner_label, stretch=1)
+        self.update_banner_view_btn = QPushButton("View release")
+        self.update_banner_view_btn.setFixedWidth(100)
+        self.update_banner_view_btn.clicked.connect(self._on_view_release_clicked)
+        banner_layout.addWidget(self.update_banner_view_btn)
+        self.update_banner_dismiss_btn = QPushButton("✕")
+        self.update_banner_dismiss_btn.setFixedWidth(28)
+        self.update_banner_dismiss_btn.setFlat(True)
+        self.update_banner_dismiss_btn.clicked.connect(self.update_banner.hide)
+        banner_layout.addWidget(self.update_banner_dismiss_btn)
+        self.update_banner.hide()
+        outer.addWidget(self.update_banner)
+
+        root = QHBoxLayout()
+        root.setContentsMargins(10, 10, 10, 10)
+        outer.addLayout(root)
 
         splitter = QSplitter(Qt.Horizontal)
         root.addWidget(splitter)
@@ -448,6 +514,49 @@ class MainWindow(QMainWindow):
         )
 
     # -------------------------------------------------------------- logic ---
+    def _check_for_updates(self, silent: bool):
+        if self.update_check_worker is not None and self.update_check_worker.isRunning():
+            return
+        self._update_check_is_silent = silent
+        self.update_check_worker = UpdateCheckWorker(APP_VERSION)
+        self.update_check_worker.checked_ok.connect(self._on_update_check_ok)
+        self.update_check_worker.failed.connect(self._on_update_check_failed)
+        self.update_check_worker.start()
+
+    def _on_update_check_ok(self, info: object):
+        if info is not None:
+            self._pending_update_info = info
+            self.update_banner_label.setText(
+                f"A new version is available: v{info.latest_version} "
+                f"(you have v{APP_VERSION})."
+            )
+            self.update_banner.show()
+        elif not self._update_check_is_silent:
+            QMessageBox.information(
+                self,
+                "No updates available",
+                f"You're running the latest version (v{APP_VERSION}).",
+            )
+
+    def _on_update_check_failed(self, message: str):
+        # A silent startup check failing (no network, GitHub rate limit,
+        # etc.) shouldn't interrupt opening the app -- only a manually
+        # triggered "Check for Updates…" surfaces the failure directly.
+        if not self._update_check_is_silent:
+            QMessageBox.warning(self, "Update check failed", message)
+
+    def _on_view_release_clicked(self):
+        if self._pending_update_info is not None:
+            QDesktopServices.openUrl(QUrl(self._pending_update_info.release_url))
+
+    def _show_about_dialog(self):
+        QMessageBox.about(
+            self,
+            "About UV Template Exporter",
+            f"UV Template Exporter\nVersion {APP_VERSION}\n\n"
+            "https://github.com/Burzt-YT/UV-Exporter",
+        )
+
     def _on_file_chosen(self, path: str):
         ext = os.path.splitext(path)[1].lower()
         if ext not in SUPPORTED_EXTENSIONS:
