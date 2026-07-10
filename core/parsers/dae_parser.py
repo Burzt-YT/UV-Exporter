@@ -4,8 +4,8 @@ COLLADA stores UVs as a flat float array inside a <source>, referenced by
 <polylist>/<triangles>/<polygons> elements via <input semantic="TEXCOORD">
 with an "offset" that indexes into interleaved per-vertex index tuples (the
 <p> element). Each mesh can have multiple TEXCOORD sets (set="0", set="1", ...)
-for multiple UV channels -- we default to set 0 (or the first one found)
-unless told otherwise.
+for multiple UV channels -- we default to set 1 (falling back to set 0, then
+whichever is found first) unless told otherwise.
 """
 
 import xml.etree.ElementTree as ET
@@ -87,16 +87,17 @@ def _extract_polygon_uvs(
     max_offset = max((int(inp.get("offset", "0")) for inp in inputs), default=0)
 
     # Pick the UV channel: an explicit requested set wins outright; otherwise
-    # prefer set="0" (the module docstring's documented default), falling
-    # back to whichever TEXCOORD input appears first in document order if
-    # there's no set="0" (some exporters omit the set attribute entirely).
-    # A meshes commonly carries several TEXCOORD inputs (paint UVs, AO/
-    # lightmap UVs, etc.) -- picking the wrong one here doesn't error, it
-    # just silently produces a template for the wrong UV channel, so this
-    # needs to be deliberate rather than "whichever was seen last".
+    # prefer set="1", falling back to set="0", falling back to whichever
+    # TEXCOORD input appears first in document order if neither "1" nor "0"
+    # is present (some exporters omit the set attribute entirely). A mesh
+    # commonly carries several TEXCOORD inputs (paint UVs, AO/lightmap UVs,
+    # etc.) -- picking the wrong one here doesn't error, it just silently
+    # produces a template for the wrong UV channel, so this needs to be
+    # deliberate rather than "whichever was seen last".
     uv_input = None
     first_texcoord = None
     vertex_derived_uv_input = None
+    uv_inputs_by_set: dict[str, ET.Element] = {}
     for inp in inputs:
         semantic = inp.get("semantic")
         if semantic == "TEXCOORD":
@@ -105,8 +106,10 @@ def _extract_polygon_uvs(
             if target_uv_set is not None:
                 if inp.get("set") == target_uv_set:
                     uv_input = inp
-            elif inp.get("set") == "0" and uv_input is None:
-                uv_input = inp
+            else:
+                set_id = inp.get("set")
+                if set_id is not None and set_id not in uv_inputs_by_set:
+                    uv_inputs_by_set[set_id] = inp
         elif semantic == "VERTEX" and vertex_derived_uv_input is None:
             resolved = _resolve_vertices_uv_source(mesh_elem, inp.get("source"))
             if resolved:
@@ -114,6 +117,12 @@ def _extract_polygon_uvs(
                     "input",
                     {"semantic": "TEXCOORD", "source": resolved, "offset": inp.get("offset", "0")},
                 )
+
+    if target_uv_set is None:
+        if "1" in uv_inputs_by_set:
+            uv_input = uv_inputs_by_set["1"]
+        elif "0" in uv_inputs_by_set:
+            uv_input = uv_inputs_by_set["0"]
 
     if uv_input is None:
         # Requested/default set wasn't found explicitly: fall back to the
@@ -225,6 +234,8 @@ def parse_dae(path: str, uv_set: str | None = None) -> UVMesh:
     mesh.available_uv_sets = _list_uv_sets_from_root(root) or ["0"]
     if uv_set is not None:
         mesh.active_uv_set = uv_set
+    elif "1" in mesh.available_uv_sets:
+        mesh.active_uv_set = "1"
     elif "0" in mesh.available_uv_sets:
         mesh.active_uv_set = "0"
     else:
