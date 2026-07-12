@@ -1,15 +1,3 @@
-"""Wrapper around the ConverterPIX command-line tool.
-
-ConverterPIX (https://github.com/mwl4/ConverterPIX) converts SCS's binary
-game formats (.pmg/.pmd, collectively "pmx") into the text-based "pix"
-middle formats (.pim etc.) that this app's pim_parser can read.
-
-This module does NOT bundle the ConverterPIX binary (it's a compiled,
-platform-specific executable under its own license). Instead it looks for
-a user-provided copy in a few conventional locations and calls it. If it
-can't be found, the caller should show clear instructions instead of
-failing silently.
-"""
 
 import os
 import shutil
@@ -18,24 +6,19 @@ import tempfile
 
 CONVERTER_EXE_NAMES = ["converter_pix", "converter_pix.exe", "ConverterPIX", "ConverterPIX.exe"]
 
-
 class ConverterNotFoundError(Exception):
     pass
-
 
 class ConversionFailedError(Exception):
     pass
 
-
 def find_converter_pix(extra_search_dirs: list[str] | None = None) -> str | None:
-    """Search common locations for a ConverterPIX executable."""
     search_dirs = list(extra_search_dirs or [])
 
     app_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     search_dirs.append(os.path.join(app_dir, "resources"))
     search_dirs.append(os.path.join(app_dir, "resources", "converter_pix"))
 
-    # Also check if it's just on PATH
     for name in CONVERTER_EXE_NAMES:
         found = shutil.which(name)
         if found:
@@ -51,22 +34,12 @@ def find_converter_pix(extra_search_dirs: list[str] | None = None) -> str | None
 
     return None
 
-
 def convert_pmg_to_pim(
     pmg_path: str,
     base_dir: str | None = None,
     converter_path: str | None = None,
     timeout_sec: int = 60,
 ) -> str:
-    """
-    Converts a .pmg (or .pmd) file to .pim using ConverterPIX, returning the
-    path to the resulting .pim file.
-
-    ConverterPIX operates on a "base" directory structure (mirroring the
-    game's mod/vehicle folder layout) rather than single loose files, since
-    a model references materials/textures by relative path. If base_dir is
-    not given, we use the file's parent directory as a best-effort base.
-    """
     converter = converter_path or find_converter_pix()
     if converter is None:
         raise ConverterNotFoundError(

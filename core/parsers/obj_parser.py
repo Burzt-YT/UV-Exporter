@@ -1,26 +1,16 @@
-"""Parser for Wavefront .obj files.
-
-Extracts per-object/per-material UV groups. Faces with more than 3 vertices
-are fan-triangulated. Faces missing UV indices are skipped (with a warning),
-since there is nothing to place in a UV template for them.
-"""
 
 from core.mesh_data import MeshParseError, UVGroup, UVMesh
 
-
 def _fan_triangulate(indices: list[int]) -> list[tuple[int, int, int]]:
-    """Fan-triangulate a convex polygon given as a list of vertex-uv indices."""
     tris = []
     for i in range(1, len(indices) - 1):
         tris.append((indices[0], indices[i], indices[i + 1]))
     return tris
 
-
 def parse_obj(path: str) -> UVMesh:
     mesh = UVMesh(source_path=path, format_name="OBJ")
 
     all_uvs: list[tuple[float, float]] = []
-    # group_key -> list of (uv_idx, uv_idx, uv_idx) triangles
     group_tris: dict[str, list[tuple[int, int, int]]] = {}
     group_order: list[str] = []
 
@@ -40,7 +30,6 @@ def parse_obj(path: str) -> UVMesh:
                 tag = parts[0]
 
                 if tag == "vt":
-                    # vt u v [w]  -- w is optional and ignored
                     if len(parts) < 3:
                         continue
                     try:
@@ -60,9 +49,6 @@ def parse_obj(path: str) -> UVMesh:
 
                 elif tag in ("o", "g"):
                     name = parts[1] if len(parts) > 1 else "default"
-                    # Only switch grouping by object/group if no material
-                    # has been declared yet for this segment; materials are
-                    # the more meaningful UV-template grouping.
                     if current_material is None:
                         current_group = name
                         if current_group not in group_tris:
@@ -83,7 +69,6 @@ def parse_obj(path: str) -> UVMesh:
                         except ValueError:
                             valid = False
                             continue
-                        # OBJ indices are 1-based; negative = relative to end
                         if vt_idx < 0:
                             vt_idx = len(all_uvs) + vt_idx + 1
                         uv_indices.append(vt_idx - 1)
@@ -112,7 +97,6 @@ def parse_obj(path: str) -> UVMesh:
         tris = group_tris[key]
         if not tris:
             continue
-        # Remap to a compact per-group UV list so each UVGroup is self-contained.
         used_indices = sorted({idx for tri in tris for idx in tri})
         remap = {old: new for new, old in enumerate(used_indices)}
         try:

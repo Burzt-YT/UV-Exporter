@@ -1,28 +1,3 @@
-"""Parser for SCS Software's .pim (PIX Interchange Model) text format.
-
-.pim is the plain-text "middle format" used by SCS's Blender Tools pipeline
-(PIM = model geometry, PIT = traits, PIC = colliders, PIP = prefab, PIS =
-skeleton, PIA = animation). It is a section-based structured text format:
-
-    SectionName {
-        PropName: value
-        PropName2: value2
-        AnotherSection {
-            ...
-        }
-    }
-
-Within a "Piece" section, per-vertex attribute data is stored as "Stream"
-sub-sections carrying a Format (e.g. FLOAT2) and Tag (e.g. _UV) followed by
-that many data lines, and faces are stored as flat triangle index lists.
-
-Because this is a reverse-engineered, community-documented format rather
-than a formally specified one, this parser is intentionally tolerant: it
-scans for the structural tokens it needs (Piece / Stream / Format / Tag /
-Triangles-like index blocks) rather than requiring an exact grammar match,
-and it reports clearly if a file's structure doesn't match what it expects
-instead of silently producing wrong output.
-"""
 
 import re
 
@@ -30,7 +5,6 @@ from core.mesh_data import MeshParseError, UVGroup, UVMesh
 
 _SECTION_OPEN_RE = re.compile(r"^(\w+)\s*\{\s*$")
 _PROP_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(.*)$")
-
 
 class _Section:
     __slots__ = ("type", "props", "children")
@@ -58,9 +32,7 @@ class _Section:
     def children_of(self, type_name: str):
         return [c for c in self.children if c.type == type_name]
 
-
 def _tokenize_blocks(text: str) -> list[str]:
-    """Split raw text into lines, stripping comments and blank lines."""
     lines = []
     for raw in text.splitlines():
         line = raw.strip()
@@ -69,10 +41,7 @@ def _tokenize_blocks(text: str) -> list[str]:
         lines.append(line)
     return lines
 
-
 def _parse_sections(lines: list[str], start: int = 0) -> tuple[list[_Section], int]:
-    """Parses a flat list of pre-cleaned lines into a section tree.
-    Returns (sections_at_this_level, next_index)."""
     sections = []
     i = start
     while i < len(lines):
@@ -94,20 +63,12 @@ def _parse_sections(lines: list[str], start: int = 0) -> tuple[list[_Section], i
             i += 1
             continue
         elif m:
-            # Property before any section opened at this level -- attach to
-            # a synthetic holder so nothing is silently lost, but this
-            # shouldn't normally happen in a well-formed file.
             i += 1
             continue
 
-        # data lines that belong to the most recently opened but not-yet-
-        # closed section (e.g. raw stream numeric data) are handled by the
-        # caller inspecting props with a special "__data__" convention;
-        # here we just skip lines we don't recognize structurally.
         i += 1
 
     return sections, i
-
 
 def _try_parse_numeric_row(line: str) -> list[float] | None:
     parts = line.replace(",", " ").split()
@@ -116,16 +77,7 @@ def _try_parse_numeric_row(line: str) -> list[float] | None:
     except ValueError:
         return None
 
-
 def _extract_stream_blocks(raw_text: str) -> list[dict]:
-    """
-    Best-effort extraction of Stream blocks (Format/Tag + numeric data rows)
-    from within Piece sections, since the exact nesting/line-count framing
-    of stream data in real .pim files is not something this parser can
-    verify without a reference sample. This scans line-by-line for the
-    documented tokens (Format:, Tag:) and collects subsequent numeric rows
-    until the next recognized keyword or closing brace.
-    """
     streams = []
     lines = raw_text.splitlines()
     current = None
@@ -163,7 +115,6 @@ def _extract_stream_blocks(raw_text: str) -> list[dict]:
 
     return streams
 
-
 def _list_uv_tags_from_text(raw_text: str) -> list[str]:
     seen: list[str] = []
     seen_set = set()
@@ -174,14 +125,7 @@ def _list_uv_tags_from_text(raw_text: str) -> list[str]:
             seen.append(tag)
     return seen
 
-
 def list_uv_tags(path: str) -> list[str]:
-    """Scans a .pim file for the distinct UV-ish stream tags used across all
-    Piece sections (e.g. ["_UV0", "_UV1"] for a model with separate paint
-    and lightmap UV streams), in first-seen order. Used by the UI to offer
-    a channel picker before parsing. Returns [] on read failure or if no
-    Piece/UV-tagged streams are found; parse_pim() will raise a clearer
-    error in that case."""
     try:
         with open(path, "r", encoding="utf-8", errors="replace") as f:
             raw_text = f.read()
@@ -189,14 +133,7 @@ def list_uv_tags(path: str) -> list[str]:
         return []
     return _list_uv_tags_from_text(raw_text)
 
-
 def parse_pim(path: str, uv_tag: str | None = None) -> UVMesh:
-    """uv_tag: an exact stream tag (e.g. "_UV0"), or None to use whichever
-    UV-ish stream tag appears first in each piece (the historical default
-    behavior, kept for files with only one UV stream). When uv_tag is given
-    and a piece doesn't have a stream with that exact tag, that piece is
-    skipped with a warning rather than silently substituting a different
-    UV stream."""
     mesh = UVMesh(source_path=path, format_name="SCS PIM")
 
     try:
@@ -205,8 +142,6 @@ def parse_pim(path: str, uv_tag: str | None = None) -> UVMesh:
     except OSError as e:
         raise MeshParseError(f"Could not read .pim file: {e}") from e
 
-    # Reuse this read for tag discovery instead of a second file read via
-    # list_uv_tags() -- see the .dae parser's equivalent comment.
     available_tags = _list_uv_tags_from_text(raw_text)
     mesh.available_uv_sets = available_tags or ([uv_tag] if uv_tag else [])
     mesh.active_uv_set = uv_tag if uv_tag is not None else (available_tags[0] if available_tags else "")
@@ -218,7 +153,6 @@ def parse_pim(path: str, uv_tag: str | None = None) -> UVMesh:
             "it was converted with ConverterPIX first."
         )
 
-    # Split the file into per-Piece chunks so streams don't bleed across pieces.
     piece_starts = [m.start() for m in re.finditer(r"^Piece\b.*\{", raw_text, re.MULTILINE)]
     if not piece_starts:
         raise MeshParseError(
@@ -256,7 +190,6 @@ def parse_pim(path: str, uv_tag: str | None = None) -> UVMesh:
 
         uvs = [(row[0], row[1]) for row in uv_stream["rows"] if len(row) >= 2]
 
-        # Look for a Triangles/Faces index block within this piece chunk.
         tri_match = re.search(
             r"(?:Triangles|Faces)\s*\{(.*?)\}", chunk, re.DOTALL
         )
@@ -271,10 +204,6 @@ def parse_pim(path: str, uv_tag: str | None = None) -> UVMesh:
             for t in range(len(flat) // 3):
                 triangles.append((flat[t * 3], flat[t * 3 + 1], flat[t * 3 + 2]))
         else:
-            # No explicit triangle block found -- assume the UV stream is
-            # already in triangle-list order (3 consecutive rows = 1 tri),
-            # which matches how "graphics-card-friendly" exported streams
-            # are typically laid out.
             for t in range(len(uvs) // 3):
                 triangles.append((t * 3, t * 3 + 1, t * 3 + 2))
 

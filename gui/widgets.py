@@ -1,4 +1,3 @@
-"""Reusable widgets for the UV Template Exporter."""
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor, QPainter, QPixmap
@@ -16,7 +15,6 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-
 
 class ColorPickerButton(QPushButton):
     colorChanged = Signal(QColor)
@@ -54,9 +52,7 @@ class ColorPickerButton(QPushButton):
             self.set_color(chosen)
             self.colorChanged.emit(chosen)
 
-
 class GroupListWidget(QWidget):
-    """Checkbox list of UV groups (materials/pieces) to include in export."""
 
     selectionChanged = Signal()
 
@@ -101,9 +97,6 @@ class GroupListWidget(QWidget):
         self.match_label.hide()
         layout.addWidget(self.match_label)
 
-        # Warns when items outside the current search are still checked --
-        # otherwise it's invisible that a search+check workflow left the
-        # rest of a previous selection silently included in the render.
         self.hidden_checked_label = QLabel("")
         self.hidden_checked_label.setStyleSheet("color: #d8a13a; font-size: 10px;")
         self.hidden_checked_label.setWordWrap(True)
@@ -122,10 +115,6 @@ class GroupListWidget(QWidget):
         self.list_widget.itemChanged.connect(self._on_item_changed)
 
     def populate(self, group_infos: list[tuple[str, int]]):
-        """group_infos: list of (name, triangle_count). Resets every group to
-        checked -- use populate_preserving_checks() instead when reloading
-        the same model (e.g. after switching UV channel) if the user's
-        existing selection should carry over."""
         self.list_widget.blockSignals(True)
         self.list_widget.clear()
         for name, tri_count in group_infos:
@@ -139,19 +128,11 @@ class GroupListWidget(QWidget):
         self.selectionChanged.emit()
 
     def populate_preserving_checks(self, group_infos: list[tuple[str, int]]):
-        """Like populate(), but re-applies whatever was checked before the
-        call instead of defaulting every group back to checked. Group names
-        are stable across a UV-channel switch (the channel only changes
-        *which* UVs a group holds, not its name), so this lets switching
-        channels keep whatever part you'd isolated instead of silently
-        re-including everything -- the same trap search-filtering fell into."""
         previously_checked = self.checked_names()
         self.populate(group_infos)
         self.set_checked(previously_checked)
 
     def set_checked(self, names: set[str]):
-        """Checks exactly the groups named in `names` and unchecks the rest.
-        Names that no longer exist in the current list are simply ignored."""
         self.list_widget.blockSignals(True)
         for i in range(self.list_widget.count()):
             item = self.list_widget.item(i)
@@ -165,10 +146,6 @@ class GroupListWidget(QWidget):
         self.selectionChanged.emit()
 
     def _apply_filter(self, query: str):
-        """Hides list items whose group name doesn't match the search query.
-        Checked state is preserved for hidden items so filtering never
-        silently changes what's included in the export -- see
-        _update_hidden_checked_warning() for why that's surfaced to the user."""
         query = query.strip().lower()
         visible_count = 0
         total_count = self.list_widget.count()
@@ -189,10 +166,6 @@ class GroupListWidget(QWidget):
         self._update_hidden_checked_warning()
 
     def _update_hidden_checked_warning(self):
-        """Surfaces the case that silently produced identical previews/exports
-        regardless of what the visible checkboxes said: items hidden by the
-        current search that are still checked, and therefore still included
-        in the render even though they're out of sight."""
         hidden_checked = 0
         for i in range(self.list_widget.count()):
             item = self.list_widget.item(i)
@@ -220,9 +193,6 @@ class GroupListWidget(QWidget):
         self.selectionChanged.emit()
 
     def _check_only_visible(self):
-        """Checks every group currently matching the search filter and
-        unchecks everything else -- the "isolate just this part" action
-        users reach for search for in the first place."""
         self.list_widget.blockSignals(True)
         for i in range(self.list_widget.count()):
             item = self.list_widget.item(i)
@@ -238,7 +208,6 @@ class GroupListWidget(QWidget):
             if item.checkState() == Qt.Checked:
                 names.add(item.data(Qt.UserRole))
         return names
-
 
 def make_labeled_row(label_text: str, widget: QWidget) -> QHBoxLayout:
     row = QHBoxLayout()

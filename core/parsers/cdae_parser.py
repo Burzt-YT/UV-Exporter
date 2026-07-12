@@ -1,35 +1,3 @@
-"""Parser for BeamNG's "Cached Collada" (.cdae) binary shape format.
-
-.cdae is BeamNG's compiled/binary form of a DAE model (a Torque3D-derived
-TSShape), used at runtime instead of the original .dae for faster loading.
-It is NOT XML like standard COLLADA -- it's a MessagePack container,
-optionally Zstandard-compressed, holding a serialized TSShape.
-
-This parser implements the documented v31 layout
-(https://documentation.beamng.com/modding/file_formats/cdae/):
-
-    int32   version            (low byte must be 31)
-    uint32  headerSize
-    bytes   msgpack header      {compression, bodysize, ...}
-    bytes   body                (zstd-compressed if header.compression)
-
-The decompressed body is itself MessagePack, containing, in order:
-shape info, a fixed sequence of named "pack_vector" blocks (nodes,
-objects, ..., details), a shape-names string table, then the mesh list.
-
-Only what's needed for a UV template is extracted: each StandardMesh's
-`verts`/`tverts` (source UV data) and `primitives`/`indices` (to build
-triangles), grouped by material index via the shape's material list.
-Skinned/decal/sorted/null meshes and animation data are read structurally
-(to stay in sync with the stream) but not interpreted further.
-
-Torque3D's TSDrawPrimitive (3 x int32: start, numElements, matIndex) packs
-draw-type and material index into matIndex's high bits:
-    TypeMask     = bits 30-31 (0=Triangles, 1=Strip, 2=Fan)
-    Indexed      = bit 29
-    NoMaterial   = bit 28
-    MaterialMask = remaining bits (the actual material index)
-"""
 
 import struct
 
@@ -37,19 +5,17 @@ from core.mesh_data import MeshParseError, UVGroup, UVMesh
 
 try:
     import msgpack
-except ImportError:  # pragma: no cover - surfaced as a clear runtime error
+except ImportError:
     msgpack = None
 
 try:
     import zstandard
-except ImportError:  # pragma: no cover
+except ImportError:
     zstandard = None
-
 
 CDAE_VERSION_MASK = 0xFF
 CDAE_SUPPORTED_VERSION = 31
 
-# TSDrawPrimitive.matIndex bit layout (see TSMesh::TSDrawPrimitive in Torque3D)
 _PRIM_TYPE_MASK = 0b11 << 30
 _PRIM_TYPE_TRIANGLES = 0 << 30
 _PRIM_TYPE_STRIP = 1 << 30
@@ -64,12 +30,7 @@ MESH_TYPE_DECAL = 2
 MESH_TYPE_SORTED = 3
 MESH_TYPE_NULL = 4
 
-
 class _Cursor:
-    """Small helper for walking a decoded MessagePack object stream in the
-    exact fixed order the format defines, since the body isn't a single
-    nested msgpack value but a flat sequence of independently-packed
-    objects and binary vector blocks concatenated together."""
 
     def __init__(self, unpacker: "msgpack.Unpacker"):
         self.unpacker = unpacker
@@ -84,9 +45,7 @@ class _Cursor:
                 "doesn't recognize."
             ) from e
 
-
 def _read_pack_vector(cursor: _Cursor) -> tuple[int, int, bytes]:
-    """Reads one pack_vector block: (length int32, element_size int32, raw bin)."""
     length = cursor.obj()
     elem_size = cursor.obj()
     if not isinstance(length, int) or not isinstance(elem_size, int):
@@ -107,7 +66,6 @@ def _read_pack_vector(cursor: _Cursor) -> tuple[int, int, bytes]:
         )
     return length, elem_size, bytes(data[:nbytes])
 
-
 def _floats_from(data: bytes, count: int) -> list[float]:
     if count == 0:
         return []
@@ -116,15 +74,10 @@ def _floats_from(data: bytes, count: int) -> list[float]:
         raise MeshParseError("Truncated float array while reading .cdae mesh data.")
     return list(struct.unpack(f"<{count}f", data[:expected]))
 
-
 def _skip_pack_vector(cursor: _Cursor) -> None:
     _read_pack_vector(cursor)
 
-
 def _read_shape_vectors(cursor: _Cursor) -> None:
-    """Reads (and discards) the fixed sequence of shape-level pack_vector
-    blocks that precede the mesh list. We don't need node/animation data
-    for a UV template, but must consume them in order to reach the meshes."""
     names = [
         "nodes", "objects", "subShapeFirstNode", "subShapeFirstObject",
         "subShapeNumNodes", "subShapeNumObjects", "defaultRotations",
@@ -136,7 +89,6 @@ def _read_shape_vectors(cursor: _Cursor) -> None:
     for _name in names:
         _skip_pack_vector(cursor)
 
-
 def _read_names_table(cursor: _Cursor) -> list[str]:
     count = cursor.obj()
     if not isinstance(count, int) or count < 0:
@@ -147,11 +99,7 @@ def _read_names_table(cursor: _Cursor) -> list[str]:
         names.append(name.decode("utf-8", errors="replace") if isinstance(name, bytes) else str(name))
     return names
 
-
 def _read_mesh(cursor: _Cursor, mesh_index: int) -> dict | None:
-    """Reads one mesh entry. Returns a dict with verts/tverts/primitives/
-    indices for standard & skin meshes, or None for null/unsupported meshes
-    (still fully consumed from the stream)."""
     mesh_type = cursor.obj()
     if not isinstance(mesh_type, int):
         raise MeshParseError(f"Malformed mesh type for mesh #{mesh_index} in .cdae body.")
@@ -159,24 +107,21 @@ def _read_mesh(cursor: _Cursor, mesh_index: int) -> dict | None:
     if mesh_type == MESH_TYPE_NULL:
         return None
 
-    # numFrames, numMatFrames, parentMesh
     _num_frames = cursor.obj()
     _num_mat_frames = cursor.obj()
     parent_mesh = cursor.obj()
-    # Box3F bounds (6 floats) + Point3F center (3 floats) + float radius,
-    # all packed as individual msgpack floats.
     for _ in range(6 + 3 + 1):
         cursor.obj()
 
     _len_v, _sz_v, verts_raw = _read_pack_vector(cursor)
     _len_tv, _sz_tv, tverts_raw = _read_pack_vector(cursor)
-    _len_tv2, _sz_tv2, tverts2_raw = _read_pack_vector(cursor)  # 2nd UV channel (lightmap/AO, if present)
-    _skip_pack_vector(cursor)  # colors
-    _skip_pack_vector(cursor)  # norms
-    _skip_pack_vector(cursor)  # encodedNorms
+    _len_tv2, _sz_tv2, tverts2_raw = _read_pack_vector(cursor)
+    _skip_pack_vector(cursor)
+    _skip_pack_vector(cursor)
+    _skip_pack_vector(cursor)
     _len_p, _sz_p, primitives_raw = _read_pack_vector(cursor)
     _len_i, _sz_i, indices_raw = _read_pack_vector(cursor)
-    _skip_pack_vector(cursor)  # tangents
+    _skip_pack_vector(cursor)
 
     _verts_per_frame = cursor.obj()
     _mesh_flags = cursor.obj()
@@ -184,28 +129,21 @@ def _read_mesh(cursor: _Cursor, mesh_index: int) -> dict | None:
     if mesh_type == MESH_TYPE_SKIN:
         is_parent = isinstance(parent_mesh, int) and parent_mesh < 0
         if is_parent:
-            _skip_pack_vector(cursor)  # initialVerts
-            _skip_pack_vector(cursor)  # initialNorms
-        _skip_pack_vector(cursor)  # initialTransforms
+            _skip_pack_vector(cursor)
+            _skip_pack_vector(cursor)
+        _skip_pack_vector(cursor)
         if is_parent:
-            _skip_pack_vector(cursor)  # vertexIndex
-            _skip_pack_vector(cursor)  # boneIndex
-            _skip_pack_vector(cursor)  # weight
-            _skip_pack_vector(cursor)  # nodeIndex
+            _skip_pack_vector(cursor)
+            _skip_pack_vector(cursor)
+            _skip_pack_vector(cursor)
+            _skip_pack_vector(cursor)
 
     if mesh_type not in (MESH_TYPE_STANDARD, MESH_TYPE_SKIN):
-        # DecalMesh (deprecated) and SortedMesh share the same base layout
-        # we've just consumed; we simply don't build UV groups from them,
-        # since they aren't standard renderable surface geometry.
         return None
 
-    # verts: Point3F (12 bytes) per vertex -> element count from raw length
     vert_elem_size = 12
     num_verts = len(verts_raw) // vert_elem_size if vert_elem_size else 0
 
-    # tverts / tverts2: Point2F (8 bytes) per vertex. tverts2 is a second,
-    # optional UV channel (commonly a lightmap/AO unwrap) -- present on some
-    # meshes and empty on others, so it's decoded but may come back as [].
     tvert_elem_size = 8
     num_tverts = len(tverts_raw) // tvert_elem_size if tvert_elem_size else 0
     tvert_flat = _floats_from(tverts_raw, num_tverts * 2)
@@ -215,7 +153,6 @@ def _read_mesh(cursor: _Cursor, mesh_index: int) -> dict | None:
     tvert2_flat = _floats_from(tverts2_raw, num_tverts2 * 2)
     uvs2 = [(tvert2_flat[i * 2], tvert2_flat[i * 2 + 1]) for i in range(num_tverts2)]
 
-    # primitives: TSDrawPrimitive = 3 x int32 (start, numElements, matIndex)
     prim_stride = 12
     num_prims = len(primitives_raw) // prim_stride
     primitives = []
@@ -225,8 +162,6 @@ def _read_mesh(cursor: _Cursor, mesh_index: int) -> dict | None:
         )
         primitives.append((start, num_elements, mat_index_raw))
 
-    # indices: array of signed/unsigned 32-bit ints (element size tells us
-    # exactly, but Torque3D's TSMesh always stores these as 32-bit).
     index_elem_size = 4
     num_indices = len(indices_raw) // index_elem_size if index_elem_size else 0
     indices = list(struct.unpack(f"<{num_indices}i", indices_raw[: num_indices * 4])) if num_indices else []
@@ -239,11 +174,7 @@ def _read_mesh(cursor: _Cursor, mesh_index: int) -> dict | None:
         "indices": indices,
     }
 
-
 def _primitive_triangles(primitives: list[tuple[int, int, int]], indices: list[int]) -> dict[int, list[tuple[int, int, int]]]:
-    """Converts a mesh's primitive list into triangles, grouped by resolved
-    material index. Strips/fans are decomposed the same way the renderer
-    would (alternating winding for strips, fan pivot for fans)."""
     by_material: dict[int, list[tuple[int, int, int]]] = {}
 
     for start, num_elements, mat_index_raw in primitives:
@@ -255,7 +186,6 @@ def _primitive_triangles(primitives: list[tuple[int, int, int]], indices: list[i
 
         seg = indices[start : start + num_elements]
         if len(seg) < num_elements:
-            # Truncated primitive -- skip rather than reading garbage.
             continue
 
         tris = by_material.setdefault(mat_index, [])
@@ -279,12 +209,7 @@ def _primitive_triangles(primitives: list[tuple[int, int, int]], indices: list[i
 
     return by_material
 
-
 def _decode_meshes(path: str) -> list[dict | None]:
-    """Reads and decodes a .cdae file down to its list of parsed meshes
-    (each with both UV channels already extracted). Shared by parse_cdae()
-    and list_uv_channels() so the latter doesn't need its own copy of the
-    binary-format walk."""
     if msgpack is None:
         raise MeshParseError(
             "Reading .cdae files requires the 'msgpack' Python package, which "
@@ -302,8 +227,6 @@ def _decode_meshes(path: str) -> list[dict | None]:
         raise MeshParseError("This .cdae file is too small to be valid.")
 
     version, header_size = struct.unpack_from("<Ii", data, 0)
-    # header_size is declared unsigned in the spec; struct 'i' reads it
-    # signed, but a legitimate header is always small and positive.
     if header_size < 0:
         raise MeshParseError("This .cdae file has an invalid header size.")
 
@@ -353,18 +276,13 @@ def _decode_meshes(path: str) -> list[dict | None]:
     cursor = _Cursor(unpacker)
 
     try:
-        # 1. Shape info: mSmallestVisibleSize, mSmallestVisibleDL, radius,
-        # tubeRadius, center (3 floats), bounds (6 floats)
         for _ in range(2 + 2 + 3 + 6):
             cursor.obj()
 
-        # 2. Fixed sequence of shape-level pack_vector blocks
         _read_shape_vectors(cursor)
 
-        # 3. Shape names table
         _read_names_table(cursor)
 
-        # 4. Meshes
         total_meshes = cursor.obj()
         if not isinstance(total_meshes, int) or total_meshes < 0:
             raise MeshParseError("Malformed mesh count in .cdae body.")
@@ -373,10 +291,6 @@ def _decode_meshes(path: str) -> list[dict | None]:
         for mesh_index in range(total_meshes):
             parsed_meshes.append(_read_mesh(cursor, mesh_index))
 
-        # 5. Sequences (skip -- not needed for UVs, but must stay in sync
-        # in case a caller wants to extend this parser later; since we
-        # stop reading once we have the mesh + material data we need, we
-        # don't attempt to parse sequences/materials positions here).
     except MeshParseError:
         raise
     except Exception as e:
@@ -387,13 +301,7 @@ def _decode_meshes(path: str) -> list[dict | None]:
 
     return parsed_meshes
 
-
 def list_uv_channels(path: str) -> list[tuple[str, str]]:
-    """Returns the UV channels this .cdae file actually has data on, as
-    [(channel_id, display_label), ...], for the UI to offer a picker.
-    Channel "1" (tverts) is present on virtually every real mesh; channel
-    "2" (tverts2) is only offered if at least one mesh actually has data
-    there, since most BeamNG shapes don't use a second UV channel at all."""
     try:
         parsed_meshes = _decode_meshes(path)
     except MeshParseError:
@@ -409,13 +317,7 @@ def list_uv_channels(path: str) -> list[tuple[str, str]]:
         channels.append(("2", "UV Channel 2 (lightmap/AO)"))
     return channels
 
-
 def parse_cdae(path: str, uv_channel: str | None = None) -> UVMesh:
-    """uv_channel: "1" (tverts, the default) or "2" (tverts2, commonly a
-    lightmap/AO unwrap). Meshes without data on the requested channel are
-    skipped with a warning rather than silently falling back to the other
-    channel, since that produced exactly the kind of "missing part with no
-    explanation" bug this parameter exists to avoid."""
     if uv_channel not in (None, "1", "2"):
         raise MeshParseError(f"Unknown .cdae UV channel '{uv_channel}' (expected '1' or '2').")
     channel = uv_channel or "1"

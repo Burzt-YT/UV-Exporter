@@ -1,12 +1,3 @@
-"""Parser for COLLADA (.dae) files.
-
-COLLADA stores UVs as a flat float array inside a <source>, referenced by
-<polylist>/<triangles>/<polygons> elements via <input semantic="TEXCOORD">
-with an "offset" that indexes into interleaved per-vertex index tuples (the
-<p> element). Each mesh can have multiple TEXCOORD sets (set="0", set="1", ...)
-for multiple UV channels -- we default to set 1 (falling back to set 0, then
-whichever is found first) unless told otherwise.
-"""
 
 import xml.etree.ElementTree as ET
 
@@ -14,34 +5,25 @@ from core.mesh_data import MeshParseError, UVGroup, UVMesh
 
 COLLADA_NS_CANDIDATES = [
     "{http://www.collada.org/2005/11/COLLADASchema}",
-    "",  # some exporters omit the namespace
+    "",
 ]
-
 
 def _local(tag: str) -> str:
     return tag.split("}")[-1] if "}" in tag else tag
 
-
 def _find_all(elem, tag_name):
-    """Namespace-agnostic recursive find of all descendants with a given local tag."""
     return [e for e in elem.iter() if _local(e.tag) == tag_name]
 
-
 def _find_direct(elem, tag_name):
-    """Namespace-agnostic search of direct children with a given local tag."""
     return [e for e in elem if _local(e.tag) == tag_name]
-
 
 def _parse_float_array(text: str) -> list[float]:
     return [float(x) for x in text.split()]
 
-
 def _parse_int_array(text: str) -> list[int]:
     return [int(x) for x in text.split()]
 
-
 def _get_source_floats(mesh_elem, source_id: str) -> tuple[list[float], int]:
-    """Returns (flat_values, stride) for the <source> with the given id."""
     source_id = source_id.lstrip("#")
     for source in _find_direct(mesh_elem, "source"):
         if source.get("id") == source_id:
@@ -58,10 +40,7 @@ def _get_source_floats(mesh_elem, source_id: str) -> tuple[list[float], int]:
             return values, stride
     return [], 0
 
-
 def _resolve_vertices_uv_source(mesh_elem, vertices_id: str) -> str | None:
-    """<vertices> elements indirect to a source via <input semantic="TEXCOORD">
-    (rare, usually POSITION only, but handle it defensively)."""
     vertices_id = vertices_id.lstrip("#")
     for vtx in _find_direct(mesh_elem, "vertices"):
         if vtx.get("id") == vertices_id:
@@ -70,15 +49,9 @@ def _resolve_vertices_uv_source(mesh_elem, vertices_id: str) -> str | None:
                     return inp.get("source")
     return None
 
-
 def _extract_polygon_uvs(
     mesh_elem, poly_elem, target_uv_set: str | None
 ) -> tuple[list[tuple[float, float]], list[tuple[int, int, int]], str | None] | None:
-    """Extract (uvs, triangles, resolved_set) from a <triangles>/<polylist>/
-    <polygons> element. Returns None if this element has no usable TEXCOORD
-    input. resolved_set is the actual "set" attribute used (or None if it
-    came from a VERTEX-indirected input with no set of its own), so the
-    caller can tell whether a requested set was actually honored."""
 
     inputs = _find_direct(poly_elem, "input")
     if not inputs:
@@ -86,14 +59,6 @@ def _extract_polygon_uvs(
 
     max_offset = max((int(inp.get("offset", "0")) for inp in inputs), default=0)
 
-    # Pick the UV channel: an explicit requested set wins outright; otherwise
-    # prefer set="1", falling back to set="0", falling back to whichever
-    # TEXCOORD input appears first in document order if neither "1" nor "0"
-    # is present (some exporters omit the set attribute entirely). A mesh
-    # commonly carries several TEXCOORD inputs (paint UVs, AO/lightmap UVs,
-    # etc.) -- picking the wrong one here doesn't error, it just silently
-    # produces a template for the wrong UV channel, so this needs to be
-    # deliberate rather than "whichever was seen last".
     uv_input = None
     first_texcoord = None
     vertex_derived_uv_input = None
@@ -125,8 +90,6 @@ def _extract_polygon_uvs(
             uv_input = uv_inputs_by_set["0"]
 
     if uv_input is None:
-        # Requested/default set wasn't found explicitly: fall back to the
-        # first TEXCOORD input in the file, then a VERTEX-indirected one.
         uv_input = first_texcoord or vertex_derived_uv_input
 
     if uv_input is None:
@@ -172,7 +135,6 @@ def _extract_polygon_uvs(
                 for i in range(1, vc - 1):
                     triangles.append((face_uv_idx[0], face_uv_idx[i], face_uv_idx[i + 1]))
         else:
-            # <polygons> uses one <p> per face, no vcount
             for p in p_elements:
                 idx = _parse_int_array(p.text or "")
                 vc = len(idx) // stride
@@ -186,7 +148,6 @@ def _extract_polygon_uvs(
     resolved_set = uv_input.get("set")
     return uvs, triangles, resolved_set
 
-
 def _list_uv_sets_from_root(root) -> list[str]:
     seen: list[str] = []
     seen_set = set()
@@ -199,22 +160,12 @@ def _list_uv_sets_from_root(root) -> list[str]:
             seen.append(set_id)
     return seen
 
-
 def list_uv_sets(path: str) -> list[str]:
-    """Scans a COLLADA file for the distinct TEXCOORD "set" identifiers used
-    across all polygon elements, in first-seen order (e.g. ["0", "1", "2"]).
-    Used by the UI to offer a UV-channel picker before parsing, since a mesh
-    with multiple UV channels (paint layout, lightmap/AO, etc.) needs a
-    human to pick one -- guessing silently is what produced the invisible-
-    hood bug this parameter exists to prevent. Returns [] on any read/parse
-    failure or if the file has no TEXCOORD inputs at all; parse_dae() will
-    raise a clearer error in that case."""
     try:
         tree = ET.parse(path)
     except (ET.ParseError, OSError):
         return []
     return _list_uv_sets_from_root(tree.getroot())
-
 
 def parse_dae(path: str, uv_set: str | None = None) -> UVMesh:
     mesh = UVMesh(source_path=path, format_name="COLLADA (.dae)")
@@ -228,9 +179,6 @@ def parse_dae(path: str, uv_set: str | None = None) -> UVMesh:
 
     root = tree.getroot()
 
-    # Reuse this parse for UV-set discovery instead of calling list_uv_sets()
-    # (which would re-parse the whole file again) -- .dae files can be tens
-    # of megabytes, so a second full XML parse here isn't free.
     mesh.available_uv_sets = _list_uv_sets_from_root(root) or ["0"]
     if uv_set is not None:
         mesh.active_uv_set = uv_set
@@ -271,7 +219,6 @@ def parse_dae(path: str, uv_set: str | None = None) -> UVMesh:
                 if uv_set is not None and resolved_set != uv_set:
                     fallback_groups.append(group_name)
 
-                # Compact/remap indices for this specific group
                 used_indices = sorted({i for tri in triangles for i in tri})
                 remap = {old: new for new, old in enumerate(used_indices)}
                 try:

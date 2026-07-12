@@ -1,4 +1,3 @@
-"""Detects input file type and dispatches to the correct parser."""
 
 import os
 
@@ -18,27 +17,9 @@ from core.parsers.scs_converter import (
 
 SUPPORTED_EXTENSIONS = {".obj", ".dae", ".cdae", ".pim", ".pmg", ".pmd"}
 
-# Extensions where a single file might expose more than one UV channel/layer
-# (paint UVs vs. a lightmap/AO unwrap, etc.). .obj isn't listed: this app's
-# OBJ parser has no concept of multiple UV channels, only one global `vt`
-# pool per file. .pmg/.pmd aren't listed either -- channels can only be
-# discovered after ConverterPIX has produced a .pim, which load_mesh() does
-# on demand; see list_uv_channels()'s docstring for how to handle that case.
 MULTI_CHANNEL_EXTENSIONS = {".dae", ".cdae", ".pim"}
 
-
 def list_uv_channels(path: str) -> list[tuple[str, str]]:
-    """Returns [(channel_id, display_label), ...] of the UV channels/layers
-    this file exposes, for the UI to offer a picker *before* parsing.
-    channel_id is passed back into load_mesh(..., uv_channel=...).
-
-    Returns [] when the format doesn't have a meaningful multi-channel
-    concept here (.obj), or when channel discovery isn't possible without a
-    full parse the caller hasn't done yet (.pmg/.pmd -- convert to .pim
-    first, then call this on the resulting .pim path if you need channels
-    for it), or on any read/parse failure (the UI should just hide the
-    selector in that case; load_mesh() will raise a proper error).
-    """
     ext = os.path.splitext(path)[1].lower()
 
     if ext == ".dae":
@@ -52,18 +33,7 @@ def list_uv_channels(path: str) -> list[tuple[str, str]]:
 
     return []
 
-
 def load_mesh(path: str, base_dir: str | None = None, uv_channel: str | None = None) -> UVMesh:
-    """Loads any supported mesh file and returns parsed UV data.
-
-    uv_channel selects which UV layer/set to use for formats that can carry
-    more than one (see list_uv_channels()); None uses each parser's default
-    (UV set "0" for .dae, channel "1" for .cdae, the first UV-tagged stream
-    for .pim). Ignored for .obj, which only ever has one UV pool.
-
-    For .pmg/.pmd (raw SCS binaries), this transparently shells out to
-    ConverterPIX to produce a .pim first.
-    """
     ext = os.path.splitext(path)[1].lower()
 
     if ext == ".obj":
